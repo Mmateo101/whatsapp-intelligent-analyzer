@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WhatsApp Analyzer</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/wordcloud2.js/1.1.0/wordcloud2.min.js"></script>
+<style>
+:root {
+  --bg:       #0a0a12;
+  --card:     #12121f;
+  --card2:    #1a1a2e;
+  --accent:   #7c3aed;
+  --accent2:  #4f46e5;
+  --accent3:  #a855f7;
+  --text:     #e2e8f0;
+  --dim:      #94a3b8;
+  --border:   #1e1e3a;
+  --success:  #10b981;
+  --warn:     #f59e0b;
+  --danger:   #ef4444;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);overflow-x:hidden}
+h1,h2,h3{font-family:'Playfair Display',serif}
+a{color:var(--accent3)}
+input,button{font-family:inherit}
+
+/* ── Screens ── */
+.screen{display:none;min-height:100vh}
+.screen.active{display:flex}
+
+/* ── Welcome ── */
+#welcomeScreen{align-items:center;justify-content:center;padding:2rem;
+  background:radial-gradient(ellipse 120% 80% at 50% 0%,#1a0a3a 0%,var(--bg) 70%)}
+.welcome-wrap{max-width:500px;width:100%;text-align:center}
+.logo-icon{font-size:3.5rem;margin-bottom:1rem;filter:drop-shadow(0 0 30px #7c3aed80)}
+.welcome-wrap h1{font-size:3rem;background:linear-gradient(135deg,#a78bfa,#7c3aed,#4f46e5);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:.5rem}
+.welcome-sub{color:var(--dim);font-size:1rem;margin-bottom:2.5rem;line-height:1.6}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:1.75rem}
+.form-group{margin-bottom:1.25rem;text-align:left}
+label{display:block;font-size:.85rem;font-weight:600;color:var(--dim);margin-bottom:.5rem;letter-spacing:.04em;text-transform:uppercase}
+.input-wrap{position:relative}
+.input-wrap input{width:100%;background:#0d0d1a;border:1px solid var(--border);border-radius:10px;
+  padding:.75rem 1rem;color:var(--text);font-size:.95rem;transition:border .2s}
+.input-wrap input:focus{outline:none;border-color:var(--accent)}
+.eye-btn{position:absolute;right:.75rem;top:50%;transform:translateY(-50%);
+  background:none;border:none;color:var(--dim);cursor:pointer;font-size:1rem;padding:0}
+.eye-btn:hover{color:var(--text)}
+.file-label{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  border:2px dashed var(--border);border-radius:10px;padding:1.5rem;cursor:pointer;
+  transition:border .2s,background .2s;background:#0d0d1a;min-height:90px}
+.file-label:hover,.file-label.dragover{border-color:var(--accent);background:#1a0a3a}
+.file-label span{color:var(--dim);font-size:.9rem;margin-top:.4rem}
+.file-label .file-icon{font-size:1.8rem}
+#fileInput{display:none}
+.file-name{font-size:.85rem;color:var(--accent3);margin-top:.5rem;word-break:break-all}
+.btn-primary{width:100%;padding:.9rem;border:none;border-radius:10px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff;font-size:1rem;font-weight:700;cursor:pointer;letter-spacing:.03em;
+  transition:opacity .2s,transform .1s;margin-top:.5rem}
+.btn-primary:hover:not(:disabled){opacity:.9}
+.btn-primary:active:not(:disabled){transform:scale(.98)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.privacy{font-size:.78rem;color:var(--dim);margin-top:1rem;line-height:1.5}
+
+/* ── Loading ── */
+#loadingScreen{flex-direction:column;align-items:center;justify-content:center;
+  background:radial-gradient(ellipse 100% 60% at 50% 10%,#1a0a3a,var(--bg))}
+.pulse-wrap{position:relative;width:160px;height:160px;margin-bottom:2.5rem}
+.pulse-ring{position:absolute;border-radius:50%;border:2px solid var(--accent);
+  top:50%;left:50%;transform:translate(-50%,-50%);animation:pulse-expand 2.4s ease-out infinite}
+.pulse-ring:nth-child(1){width:60px;height:60px;animation-delay:0s;background:var(--accent)}
+.pulse-ring:nth-child(2){width:90px;height:90px;animation-delay:.4s}
+.pulse-ring:nth-child(3){width:120px;height:120px;animation-delay:.8s}
+.pulse-ring:nth-child(4){width:155px;height:155px;animation-delay:1.2s}
+.pulse-emoji{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-size:1.8rem;z-index:2}
+@keyframes pulse-expand{
+  0%{opacity:.8;transform:translate(-50%,-50%) scale(.9)}
+  60%{opacity:.3}
+  100%{opacity:0;transform:translate(-50%,-50%) scale(1.15)}
+}
+.loading-title{font-family:'Playfair Display',serif;font-size:1.6rem;margin-bottom:.75rem}
+.status-msg{color:var(--dim);font-size:1rem;min-height:1.5rem;transition:opacity .4s}
+
+/* ── Dashboard ── */
+#dashboardScreen{flex-direction:column;min-height:100vh}
+.dash-header{padding:1.25rem 2rem;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:1rem;background:var(--card)}
+.dash-header h2{font-size:1.4rem;background:linear-gradient(135deg,#a78bfa,#4f46e5);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.trunc-banner{background:#1a150a;border:1px solid var(--warn);border-radius:8px;
+  padding:.6rem 1.25rem;font-size:.85rem;color:var(--warn);display:none;margin-left:auto}
+
+/* Tabs */
+.tab-nav{display:flex;gap:.25rem;padding:.75rem 2rem;background:var(--card);
+  border-bottom:1px solid var(--border);overflow-x:auto}
+.tab-btn{padding:.55rem 1.25rem;border:1px solid transparent;border-radius:8px;
+  background:transparent;color:var(--dim);font-size:.9rem;font-weight:500;
+  cursor:pointer;white-space:nowrap;transition:all .2s}
+.tab-btn:hover{color:var(--text);background:var(--card2)}
+.tab-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+.tab-panel{display:none;padding:2rem;flex:1}
+.tab-panel.active{display:block}
+
+/* Grid helpers */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.25rem}
+.grid-5{display:grid;grid-template-columns:repeat(5,1fr);gap:1rem}
+.col-span-2{grid-column:span 2}
+
+/* Section titles */
+.section-title{font-size:1.2rem;color:var(--accent3);margin-bottom:1.25rem;font-family:'Playfair Display',serif}
+
+/* Cards */
+.panel{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:1.5rem}
+.kpi-card{background:linear-gradient(135deg,var(--card),var(--card2));
+  border:1px solid var(--border);border-radius:14px;padding:1.4rem;text-align:center;
+  transition:transform .2s,border-color .2s}
+.kpi-card:hover{transform:translateY(-2px);border-color:var(--accent)}
+.kpi-icon{font-size:1.8rem;margin-bottom:.5rem}
+.kpi-val{font-size:2rem;font-weight:700;font-family:'Playfair Display',serif;
+  background:linear-gradient(135deg,#fff,var(--accent3));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.kpi-label{font-size:.8rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-top:.3rem}
+
+/* Oracle */
+.oracle-block{background:linear-gradient(135deg,#1a0a3a,#12121f);
+  border:1px solid var(--accent);border-radius:14px;padding:1.75rem;margin-bottom:1.5rem}
+.oracle-header{display:flex;align-items:center;gap:.75rem;margin-bottom:1rem}
+.oracle-header .oc-icon{font-size:1.5rem}
+.oracle-header h3{font-size:1.1rem;color:var(--accent3)}
+.oracle-text{line-height:1.8;color:var(--text);font-size:.95rem}
+
+/* AI placeholder */
+.ai-placeholder{background:var(--card2);border:1px dashed var(--border);
+  border-radius:12px;padding:2rem;text-align:center;color:var(--dim)}
+.ai-placeholder .ph-icon{font-size:2rem;margin-bottom:.75rem}
+.ai-placeholder p{font-size:.9rem}
+.ai-placeholder strong{color:var(--danger)}
+
+/* Chart containers */
+.chart-box{position:relative;height:320px}
+.chart-box canvas{max-height:100%}
+.chart-box-tall{position:relative;height:420px}
+
+/* Member cards */
+.member-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem}
+.member-card{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:1.25rem;
+  transition:border-color .2s}
+.member-card:hover{border-color:var(--accent)}
+.member-avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:1.3rem;font-weight:700;color:#fff;margin-bottom:.75rem}
+.member-name{font-weight:600;font-size:.95rem;margin-bottom:.3rem}
+.member-role{font-size:.8rem;color:var(--accent3);font-weight:500;margin-bottom:.5rem}
+.member-desc{font-size:.82rem;color:var(--dim);line-height:1.55}
+
+/* Table */
+.data-table{width:100%;border-collapse:collapse;font-size:.88rem}
+.data-table th{text-align:left;padding:.6rem .9rem;color:var(--dim);font-weight:600;
+  text-transform:uppercase;font-size:.75rem;letter-spacing:.05em;border-bottom:1px solid var(--border)}
+.data-table td{padding:.65rem .9rem;border-bottom:1px solid #15152a;vertical-align:middle}
+.data-table tr:last-child td{border-bottom:none}
+.data-table tr:hover td{background:#15152a}
+
+/* Emoji ranking */
+.emoji-ranking{display:flex;flex-direction:column;gap:.6rem}
+.emoji-row{display:flex;align-items:center;gap:.75rem}
+.emoji-char{font-size:1.5rem;width:40px;text-align:center}
+.emoji-bar-wrap{flex:1;background:#0d0d1a;border-radius:6px;height:18px;overflow:hidden}
+.emoji-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent3));border-radius:6px;transition:width .8s ease}
+.emoji-count{font-size:.85rem;color:var(--dim);width:50px;text-align:right}
+
+/* Burst list */
+.burst-list{display:flex;flex-direction:column;gap:.75rem;max-height:380px;overflow-y:auto}
+.burst-item{background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:1rem 1.25rem}
+.burst-meta{display:flex;gap:.75rem;flex-wrap:wrap;font-size:.8rem;color:var(--dim);margin-bottom:.4rem}
+.burst-badge{background:var(--accent);color:#fff;border-radius:6px;padding:.2rem .55rem;font-size:.75rem;font-weight:600}
+.burst-sample{font-size:.88rem;color:var(--dim);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Triple texting */
+.triple-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:1rem}
+.triple-card{background:var(--card2);border:1px solid var(--border);border-radius:12px;
+  padding:1.25rem;text-align:center}
+.triple-count{font-size:2.4rem;font-weight:700;color:var(--accent3);font-family:'Playfair Display',serif}
+.triple-name{font-size:.85rem;color:var(--dim);margin-top:.3rem}
+
+/* Scroll */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#0d0d1a}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* Responsive tweaks */
+@media(max-width:900px){
+  .grid-5{grid-template-columns:repeat(3,1fr)}
+  .grid-2{grid-template-columns:1fr}
+  .grid-3{grid-template-columns:1fr}
+}
+@media(max-width:600px){
+  .grid-5{grid-template-columns:repeat(2,1fr)}
+  .dash-header{padding:1rem}
+  .tab-panel{padding:1rem}
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ WELCOME ═══════════ -->
+<div id="welcomeScreen" class="screen active">
+  <div class="welcome-wrap">
+    <div class="logo-icon">💬</div>
+    <h1>WhatsApp Analyzer</h1>
+    <p class="welcome-sub">Sube tu chat de WhatsApp y descubre los patrones ocultos,<br>
+      personalidades y dinámicas de tu grupo.</p>
+    <div class="card">
+      <div class="form-group">
+        <label>Claude API Key</label>
+        <div class="input-wrap">
+          <input type="password" id="apiKey" placeholder="sk-ant-api03-..." autocomplete="off">
+          <button class="eye-btn" id="eyeBtn" onclick="toggleEye()" title="Mostrar/ocultar">👁</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Archivo de Chat (.txt)</label>
+        <label class="file-label" id="fileLabel" for="fileInput" ondragover="dragOver(event)" ondragleave="dragLeave()" ondrop="drop(event)">
+          <span class="file-icon">📂</span>
+          <span id="fileLabelText">Haz clic o arrastra tu archivo aquí</span>
+        </label>
+        <input type="file" id="fileInput" accept=".txt" onchange="fileSelected()">
+        <div class="file-name" id="fileName"></div>
+      </div>
+      <button class="btn-primary" id="analyzeBtn" onclick="handleSubmit()">✨ Analizar Chat</button>
+    </div>
+    <p class="privacy">🔒 Tu archivo se procesa en el servidor y no se almacena. La API key nunca se guarda.</p>
+  </div>
+</div>
+
+<!-- ═══════════ LOADING ═══════════ -->
+<div id="loadingScreen" class="screen" style="align-items:center;justify-content:center;flex-direction:column">
+  <div class="pulse-wrap">
+    <div class="pulse-ring"></div>
+    <div class="pulse-ring"></div>
+    <div class="pulse-ring"></div>
+    <div class="pulse-ring"></div>
+    <div class="pulse-emoji">💬</div>
+  </div>
+  <h2 class="loading-title">Procesando tu chat…</h2>
+  <p class="status-msg" id="statusMsg">Leyendo tu chat...</p>
+</div>
+
+<!-- ═══════════ DASHBOARD ═══════════ -->
+<div id="dashboardScreen" class="screen" style="flex-direction:column">
+  <div class="dash-header">
+    <span style="font-size:1.5rem">💬</span>
+    <h2>WhatsApp Analyzer</h2>
+    <div class="trunc-banner" id="truncBanner">
+      ⚠️ Analizando los últimos 50,000 mensajes de tu chat
+    </div>
+  </div>
+  <nav class="tab-nav">
+    <button class="tab-btn active" onclick="switchTab(1)">📊 Resumen</button>
+    <button class="tab-btn" onclick="switchTab(2)">👥 Miembros</button>
+    <button class="tab-btn" onclick="switchTab(3)">🔤 Ortografía</button>
+    <button class="tab-btn" onclick="switchTab(4)">🔥 Chismes</button>
+    <button class="tab-btn" onclick="switchTab(5)">🕸️ Dinámicas</button>
+  </nav>
+
+  <!-- TAB 1 -->
+  <div class="tab-panel active" id="tp1">
+    <div class="grid-5" style="margin-bottom:1.5rem">
+      <div class="kpi-card"><div class="kpi-icon">💬</div><div class="kpi-val" id="kTotal">—</div><div class="kpi-label">Mensajes</div></div>
+      <div class="kpi-card"><div class="kpi-icon">📝</div><div class="kpi-val" id="kWords">—</div><div class="kpi-label">Palabras</div></div>
+      <div class="kpi-card"><div class="kpi-icon">😂</div><div class="kpi-val" id="kEmoji">—</div><div class="kpi-label">Emojis</div></div>
+      <div class="kpi-card"><div class="kpi-icon">📎</div><div class="kpi-val" id="kMedia">—</div><div class="kpi-label">Multimedia</div></div>
+      <div class="kpi-card"><div class="kpi-icon">📞</div><div class="kpi-val" id="kCalls">—</div><div class="kpi-label">Llamadas</div></div>
+    </div>
+
+    <div id="oracleSection" style="margin-bottom:1.5rem"></div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <div class="section-title">📅 Mensajes por Mes</div>
+        <div class="chart-box"><canvas id="monthChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="section-title">🌡️ Mapa de Calor de Actividad</div>
+        <div id="heatmapChart" style="height:320px;overflow:hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 2 -->
+  <div class="tab-panel" id="tp2">
+    <div class="panel" style="margin-bottom:1.5rem">
+      <div class="section-title">📈 Evolución Trimestral</div>
+      <div class="chart-box-tall"><canvas id="quarterlyChart"></canvas></div>
+    </div>
+    <div class="grid-2" style="margin-bottom:1.5rem">
+      <div class="panel">
+        <div class="section-title">🧠 Riqueza Léxica</div>
+        <div class="chart-box"><canvas id="scatterChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="section-title">🃏 Perfiles de Miembros</div>
+        <div id="memberCards"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 3 -->
+  <div class="tab-panel" id="tp3">
+    <div class="grid-2" style="margin-bottom:1.5rem">
+      <div class="panel">
+        <div class="section-title">🏆 Ranking de Infractores</div>
+        <div class="chart-box"><canvas id="spellingChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="section-title">☁️ Nube de Errores</div>
+        <canvas id="wordCloudCanvas" style="width:100%;height:300px;border-radius:10px"></canvas>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="section-title">📋 Errores Frecuentes</div>
+      <div style="overflow-x:auto">
+        <table class="data-table" id="errTable">
+          <thead><tr><th>#</th><th>Palabra Escrita</th><th>Sugerencia Correcta</th><th>Frecuencia</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 4 -->
+  <div class="tab-panel" id="tp4">
+    <div class="grid-2" style="margin-bottom:1.5rem">
+      <div class="panel">
+        <div class="section-title">💥 Ráfagas de Conversación</div>
+        <div id="burstList" class="burst-list"></div>
+      </div>
+      <div class="panel">
+        <div class="section-title">🗣️ Top Frases</div>
+        <div class="chart-box"><canvas id="ngramChart"></canvas></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="section-title">😄 Top 10 Emojis</div>
+      <div id="emojiRanking" class="emoji-ranking"></div>
+    </div>
+  </div>
+
+  <!-- TAB 5 -->
+  <div class="tab-panel" id="tp5">
+    <div class="grid-2" style="margin-bottom:1.5rem">
+      <div class="panel">
+        <div class="section-title">🕸️ Red de Respuestas</div>
+        <div id="networkGraph" style="height:450px;overflow:hidden"></div>
+      </div>
+      <div class="panel">
+        <div class="section-title">👻 Ghosting Rate</div>
+        <div style="overflow-x:auto">
+          <table class="data-table" id="ghostTable">
+            <thead><tr><th>Miembro</th><th>Enviados</th><th>Sin Respuesta</th><th>% Ghosteo</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="section-title">📱 Triple-Texting (3+ mensajes seguidos)</div>
+      <div id="tripleGrid" class="triple-grid"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+//  CONFIG
+// ══════════════════════════════════════════════
+const COLORS = [
+  '#7c3aed','#4f46e5','#0891b2','#10b981','#f59e0b',
+  '#ef4444','#ec4899','#8b5cf6','#06b6d4','#84cc16',
+  '#f97316','#14b8a6','#a855f7','#3b82f6','#e11d48'
+];
+
+const LOADING_MSGS = [
+  'Leyendo tu chat...', 'Detectando personalidades...', 'Consultando al Oráculo...',
+  'Calculando quién deja en visto...', 'Preparando el chisme...', 'Analizando los dramas...',
+  'Contando emojis de corazón...', 'Buscando a los fantasmas del grupo...',
+  'Procesando memes textuales...', 'Evaluando el trauma grupal...',
+  'Midiendo el caos de medianoche...', 'Casi listo...',
+];
+
+Chart.defaults.color = '#94a3b8';
+Chart.defaults.borderColor = '#1e1e3a';
+Chart.defaults.font.family = "'DM Sans', sans-serif";
+
+const charts = {};
+let loadingInterval;
+let currentData = null;
+
+// ══════════════════════════════════════════════
+//  WELCOME HELPERS
+// ══════════════════════════════════════════════
+function toggleEye() {
+  const inp = document.getElementById('apiKey');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+function fileSelected() {
+  const f = document.getElementById('fileInput').files[0];
+  if (f) {
+    document.getElementById('fileName').textContent = f.name;
+    document.getElementById('fileLabelText').textContent = '✅ Archivo seleccionado';
+  }
+}
+
+function dragOver(e) {
+  e.preventDefault();
+  document.getElementById('fileLabel').classList.add('dragover');
+}
+function dragLeave() {
+  document.getElementById('fileLabel').classList.remove('dragover');
+}
+function drop(e) {
+  e.preventDefault();
+  dragLeave();
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.endsWith('.txt')) {
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    document.getElementById('fileInput').files = dt.files;
+    fileSelected();
+  }
+}
+
+// ══════════════════════════════════════════════
+//  SUBMIT & LOADING
+// ══════════════════════════════════════════════
+function showScreen(id) {
+  ['welcomeScreen','loadingScreen','dashboardScreen'].forEach(s => {
+    const el = document.getElementById(s);
+    el.classList.remove('active');
+    el.style.display = 'none';
+  });
+  const target = document.getElementById(id);
+  target.style.display = 'flex';
+  target.classList.add('active');
+}
+
+function startLoadingMessages() {
+  let i = 0;
+  const el = document.getElementById('statusMsg');
+  el.textContent = LOADING_MSGS[0];
+  loadingInterval = setInterval(() => {
+    i = (i + 1) % LOADING_MSGS.length;
+    el.style.opacity = 0;
+    setTimeout(() => { el.textContent = LOADING_MSGS[i]; el.style.opacity = 1; }, 300);
+  }, 3000);
+}
+
+async function handleSubmit() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  const fileInput = document.getElementById('fileInput');
+
+  if (!fileInput.files[0]) {
+    alert('Por favor selecciona un archivo .txt de WhatsApp.');
+    return;
+  }
+
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+
+  showScreen('loadingScreen');
+  startLoadingMessages();
+
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  fd.append('api_key', apiKey);
+
+  try {
+    const res = await fetch('/analyze', { method: 'POST', body: fd });
+    const data = await res.json();
+
+    if (data.error) {
+      clearInterval(loadingInterval);
+      showScreen('welcomeScreen');
+      btn.disabled = false;
+      alert('Error: ' + data.error);
+      return;
+    }
+
+    currentData = data;
+    clearInterval(loadingInterval);
+    renderDashboard(data);
+    showScreen('dashboardScreen');
+
+  } catch (err) {
+    clearInterval(loadingInterval);
+    showScreen('welcomeScreen');
+    btn.disabled = false;
+    alert('Error de conexión: ' + err.message);
+  }
+}
+
+// ══════════════════════════════════════════════
+//  TABS
+// ══════════════════════════════════════════════
+function switchTab(n) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === n-1));
+  document.querySelectorAll('.tab-panel').forEach((p, i) => p.classList.toggle('active', i === n-1));
+  // Re-render tab5 D3 graph on switch to ensure correct SVG dimensions
+  if (n === 5 && currentData) renderTab5(currentData);
+}
+
+// ══════════════════════════════════════════════
+//  CHART HELPERS
+// ══════════════════════════════════════════════
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+function fmt(n) {
+  if (n >= 1_000_000) return (n/1_000_000).toFixed(1)+'M';
+  if (n >= 1_000) return (n/1_000).toFixed(1)+'k';
+  return n.toString();
+}
+
+// ══════════════════════════════════════════════
+//  MAIN RENDER
+// ══════════════════════════════════════════════
+function renderDashboard(d) {
+  if (d.metadata.truncated) {
+    const b = document.getElementById('truncBanner');
+    b.style.display = 'block';
+  }
+  renderTab1(d);
+  renderTab2(d);
+  renderTab3(d);
+  renderTab4(d);
+  // Tab5 is rendered on switch
+}
+
+// ══════════════════════════════════════════════
+//  TAB 1 — Resumen
+// ══════════════════════════════════════════════
+function renderTab1(d) {
+  const m = d.metadata;
+  document.getElementById('kTotal').textContent = fmt(m.total_messages);
+  document.getElementById('kWords').textContent = fmt(m.total_words);
+  document.getElementById('kEmoji').textContent = fmt(m.total_emojis);
+  document.getElementById('kMedia').textContent = fmt(m.total_media);
+  document.getElementById('kCalls').textContent = fmt(m.total_calls);
+
+  // Oracle
+  const oSec = document.getElementById('oracleSection');
+  if (d.ai.available && d.ai.analisis_vibe) {
+    oSec.innerHTML = `
+      <div class="oracle-block">
+        <div class="oracle-header"><span class="oc-icon">🔮</span><h3>Análisis del Oráculo</h3></div>
+        <p class="oracle-text">${escHtml(d.ai.analisis_vibe)}</p>
+      </div>`;
+  } else {
+    oSec.innerHTML = `
+      <div class="ai-placeholder oracle-block">
+        <div class="ph-icon">🔮</div>
+        <p><strong>No disponible — requiere IA</strong><br>Agrega una Claude API Key válida para obtener el análisis narrativo.</p>
+      </div>`;
+  }
+
+  // Month chart
+  destroyChart('month');
+  const labels = d.activity.by_month.map(x => x.month);
+  const counts = d.activity.by_month.map(x => x.count);
+  charts['month'] = new Chart(document.getElementById('monthChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Mensajes',
+        data: counts,
+        backgroundColor: COLORS[0] + 'cc',
+        borderColor: COLORS[0],
+        borderWidth: 1,
+        borderRadius: 5,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+        y: { beginAtZero: true }
+      }
+    }
+  });
+
+  // Heatmap (D3)
+  renderHeatmap(d.activity.heatmap);
+}
+
+function renderHeatmap(data) {
+  const container = document.getElementById('heatmapChart');
+  container.innerHTML = '';
+
+  const DAYS = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+  const margin = {top:30, right:20, bottom:30, left:48};
+  const cw = container.clientWidth || 500;
+  const ch = 300;
+  const w = cw - margin.left - margin.right;
+  const h = ch - margin.top - margin.bottom;
+
+  const svg = d3.select(container).append('svg')
+    .attr('width', cw).attr('height', ch)
+    .append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+  const xScale = d3.scaleBand().domain(DAYS).range([0, w]).padding(0.08);
+  const yScale = d3.scaleBand().domain(d3.range(24).map(String)).range([0, h]).padding(0.05);
+
+  const maxC = d3.max(data, d => d.count) || 1;
+  const colorFn = d3.scaleSequential().domain([0, maxC])
+    .interpolator(d3.interpolateRgb('#1a1a2e', '#7c3aed'));
+
+  svg.append('g').attr('transform',`translate(0,${h})`).call(
+    d3.axisBottom(xScale).tickSize(0)
+  ).select('.domain').remove();
+
+  svg.append('g').call(
+    d3.axisLeft(yScale).tickValues([0,6,12,18,23].map(String))
+      .tickFormat(d => `${d}h`).tickSize(0)
+  ).select('.domain').remove();
+
+  svg.selectAll('rect').data(data).enter().append('rect')
+    .attr('x', d => xScale(DAYS[d.day]))
+    .attr('y', d => yScale(String(d.hour)))
+    .attr('width', xScale.bandwidth())
+    .attr('height', yScale.bandwidth())
+    .attr('fill', d => colorFn(d.count))
+    .attr('rx', 3)
+    .append('title').text(d => `${DAYS[d.day]} ${d.hour}h: ${d.count} msgs`);
+
+  svg.selectAll('text').attr('fill','#94a3b8').attr('font-size','11');
+}
+
+// ══════════════════════════════════════════════
+//  TAB 2 — Miembros
+// ══════════════════════════════════════════════
+function renderTab2(d) {
+  // Stacked area
+  destroyChart('quarterly');
+  const qData = d.members.quarterly_evolution;
+  const quarters = [...new Set(qData.map(x => x.quarter))].sort();
+  const memberNames = [...new Set(qData.map(x => x.member))];
+
+  const datasets = memberNames.map((name, i) => ({
+    label: name,
+    data: quarters.map(q => {
+      const e = qData.find(x => x.quarter === q && x.member === name);
+      return e ? e.count : 0;
+    }),
+    backgroundColor: COLORS[i % COLORS.length] + '55',
+    borderColor: COLORS[i % COLORS.length],
+    borderWidth: 2, fill: true, tension: 0.4,
+  }));
+
+  charts['quarterly'] = new Chart(document.getElementById('quarterlyChart'), {
+    type: 'line',
+    data: { labels: quarters, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        y: { stacked: true, beginAtZero: true },
+        x: { ticks: { font: { size: 10 } } }
+      },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+      interaction: { mode: 'index' }
+    }
+  });
+
+  // Scatter – lexical richness
+  destroyChart('scatter');
+  const lr = d.members.lexical_richness;
+  charts['scatter'] = new Chart(document.getElementById('scatterChart'), {
+    type: 'scatter',
+    data: {
+      datasets: lr.map((m, i) => ({
+        label: m.member,
+        data: [{ x: m.total_words, y: m.richness }],
+        backgroundColor: COLORS[i % COLORS.length] + 'cc',
+        pointRadius: 10, pointHoverRadius: 13,
+      }))
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { title: { display: true, text: 'Total palabras', color: '#94a3b8' } },
+        y: { title: { display: true, text: 'Riqueza léxica', color: '#94a3b8' }, min: 0, max: 1 }
+      },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } }
+    }
+  });
+
+  // Member cards
+  const wrap = document.getElementById('memberCards');
+  const profiles = d.ai.available ? d.ai.perfiles_personales : {};
+  const members = d.metadata.members || [];
+
+  if (!members.length) { wrap.innerHTML = '<p style="color:var(--dim)">No hay miembros suficientes.</p>'; return; }
+
+  wrap.innerHTML = '<div class="member-grid">' + members.map((name, i) => {
+    const profile = profiles[name] || null;
+    const initials = name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
+    const color = COLORS[i % COLORS.length];
+    if (profile) {
+      return `<div class="member-card">
+        <div class="member-avatar" style="background:${color}">${initials}</div>
+        <div class="member-name">${escHtml(name)}</div>
+        <div class="member-role">${escHtml(profile.rol || '')}</div>
+        <div class="member-desc">${escHtml(profile.descripcion || '')}</div>
+      </div>`;
+    }
+    return `<div class="member-card">
+      <div class="member-avatar" style="background:${color}">${initials}</div>
+      <div class="member-name">${escHtml(name)}</div>
+      <div class="member-role" style="color:var(--dim)">Perfil no disponible</div>
+      <div class="member-desc" style="color:var(--danger);font-size:.8rem">No disponible — requiere IA</div>
+    </div>`;
+  }).join('') + '</div>';
+}
+
+// ══════════════════════════════════════════════
+//  TAB 3 — Ortografía
+// ══════════════════════════════════════════════
+function renderTab3(d) {
+  const sp = d.spelling;
+
+  // Horizontal bar – ranking
+  destroyChart('spelling');
+  const top = sp.ranking.slice(0, 10);
+  charts['spelling'] = new Chart(document.getElementById('spellingChart'), {
+    type: 'bar',
+    data: {
+      labels: top.map(x => x.member),
+      datasets: [{
+        label: 'Tasa de error (%)',
+        data: top.map(x => x.error_rate),
+        backgroundColor: top.map((_, i) => COLORS[i % COLORS.length] + 'cc'),
+        borderRadius: 5,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero: true, title: { display: true, text: '%', color: '#94a3b8' } } }
+    }
+  });
+
+  // Error table
+  const tbody = document.querySelector('#errTable tbody');
+  tbody.innerHTML = sp.frequent_errors.slice(0, 20).map((e, i) =>
+    `<tr><td>${i+1}</td><td style="color:#ef4444">${escHtml(e.word)}</td>
+     <td style="color:#10b981">→ ${escHtml(e.suggestion)}</td>
+     <td>${e.count}</td></tr>`
+  ).join('');
+
+  // Word cloud
+  const canvas = document.getElementById('wordCloudCanvas');
+  const cw = canvas.parentElement.clientWidth || 500;
+  canvas.width = cw;
+  canvas.height = 300;
+
+  if (sp.word_cloud_data && sp.word_cloud_data.length > 0) {
+    const maxW = Math.max(...sp.word_cloud_data.map(x => x.weight));
+    const list = sp.word_cloud_data.map(x => [x.text, Math.max(14, Math.round((x.weight/maxW)*60))]);
+    setTimeout(() => {
+      try {
+        WordCloud(canvas, {
+          list, gridSize: 10, weightFactor: 1,
+          fontFamily: 'DM Sans', rotateRatio: 0.3,
+          color: () => COLORS[Math.floor(Math.random() * 6)],
+          backgroundColor: '#12121f', shuffle: true,
+        });
+      } catch(e) { /* silent */ }
+    }, 200);
+  } else {
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#12121f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '16px DM Sans';
+    ctx.textAlign = 'center';
+    ctx.fillText('Sin errores ortográficos detectados', canvas.width/2, 150);
+  }
+}
+
+// ══════════════════════════════════════════════
+//  TAB 4 — Chismes
+// ══════════════════════════════════════════════
+function renderTab4(d) {
+  // Burst list
+  const bl = document.getElementById('burstList');
+  const bursts = d.bursts.detected;
+  if (!bursts.length) {
+    bl.innerHTML = '<p style="color:var(--dim);padding:1rem">No se detectaron ráfagas de actividad.</p>';
+  } else {
+    bl.innerHTML = bursts.map(b => `
+      <div class="burst-item">
+        <div class="burst-meta">
+          <span class="burst-badge">${b.message_count} msgs</span>
+          <span>📅 ${escHtml(b.start)}</span>
+          <span>👥 ${b.participants.slice(0,3).map(escHtml).join(', ')}${b.participants.length>3?'...':''}</span>
+        </div>
+        <div class="burst-sample">"${escHtml(b.sample)}"</div>
+      </div>`).join('');
+  }
+
+  // N-gram chart
+  destroyChart('ngram');
+  const phrases = d.bursts.top_phrases;
+  charts['ngram'] = new Chart(document.getElementById('ngramChart'), {
+    type: 'bar',
+    data: {
+      labels: phrases.map(x => x.phrase),
+      datasets: [{
+        label: 'Frecuencia',
+        data: phrases.map(x => x.count),
+        backgroundColor: phrases.map((_, i) => COLORS[i % COLORS.length] + 'cc'),
+        borderRadius: 5,
+      }]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero: true } }
+    }
+  });
+
+  // Emoji ranking
+  const er = document.getElementById('emojiRanking');
+  const emojis = d.bursts.top_emojis;
+  if (!emojis.length) { er.innerHTML = '<p style="color:var(--dim)">Sin emojis detectados.</p>'; return; }
+  const maxE = Math.max(...emojis.map(x => x.count));
+  er.innerHTML = emojis.map((e, i) => `
+    <div class="emoji-row">
+      <span style="color:var(--dim);font-size:.85rem;width:18px;text-align:right">${i+1}</span>
+      <span class="emoji-char">${e.emoji}</span>
+      <div class="emoji-bar-wrap"><div class="emoji-bar" style="width:${Math.round(e.count/maxE*100)}%"></div></div>
+      <span class="emoji-count">${fmt(e.count)}</span>
+    </div>`).join('');
+}
+
+// ══════════════════════════════════════════════
+//  TAB 5 — Dinámicas
+// ══════════════════════════════════════════════
+function renderTab5(d) {
+  renderNetworkGraph(d.members.interaction_network, d.metadata.members || []);
+
+  // Ghosting table
+  const gb = document.querySelector('#ghostTable tbody');
+  gb.innerHTML = d.dynamics.ghosting_rate.map(g => {
+    const rate = g.ghosting_rate;
+    const color = rate > 30 ? 'var(--danger)' : rate > 15 ? 'var(--warn)' : 'var(--success)';
+    return `<tr>
+      <td>${escHtml(g.member)}</td>
+      <td>${g.total_sent}</td>
+      <td>${g.ghosted_count}</td>
+      <td style="color:${color};font-weight:600">${rate}%</td>
+    </tr>`;
+  }).join('');
+
+  // Triple texting
+  const tg = document.getElementById('tripleGrid');
+  const tt = d.dynamics.triple_texting;
+  if (!tt.length) { tg.innerHTML = '<p style="color:var(--dim)">No se detectó triple-texting.</p>'; return; }
+  tg.innerHTML = tt.map((t, i) => `
+    <div class="triple-card">
+      <div class="triple-count" style="color:${COLORS[i%COLORS.length]}">${t.count}</div>
+      <div class="triple-name">${escHtml(t.member)}</div>
+    </div>`).join('');
+}
+
+function renderNetworkGraph(links, members) {
+  const container = document.getElementById('networkGraph');
+  container.innerHTML = '';
+
+  const W = container.clientWidth || 560;
+  const H = 440;
+
+  const svg = d3.select(container).append('svg')
+    .attr('width', W).attr('height', H)
+    .style('background', 'var(--card2)').style('border-radius','10px');
+
+  if (!members.length) {
+    svg.append('text').attr('x', W/2).attr('y', H/2)
+      .attr('text-anchor','middle').attr('fill','#94a3b8').text('Sin datos de red');
+    return;
+  }
+
+  const nodes = members.map((id, i) => ({ id, color: COLORS[i % COLORS.length] }));
+  const validLinks = links.filter(l =>
+    members.includes(l.source) && members.includes(l.target)
+  ).slice(0, 50);
+
+  const maxW = d3.max(validLinks, l => l.weight) || 1;
+
+  // Defs: arrow marker
+  svg.append('defs').append('marker')
+    .attr('id','arr').attr('viewBox','0 -4 8 8')
+    .attr('refX',22).attr('refY',0)
+    .attr('markerWidth',5).attr('markerHeight',5)
+    .attr('orient','auto')
+    .append('path').attr('d','M0,-4L8,0L0,4').attr('fill','#7c3aed70');
+
+  const linkSel = svg.append('g').selectAll('line').data(validLinks).enter().append('line')
+    .attr('stroke','#7c3aed60')
+    .attr('stroke-width', d => Math.max(1, (d.weight/maxW)*5))
+    .attr('marker-end','url(#arr)');
+
+  const nodeSel = svg.append('g').selectAll('circle').data(nodes).enter().append('circle')
+    .attr('r', 24)
+    .attr('fill', d => d.color)
+    .attr('stroke','#0a0a12').attr('stroke-width',2)
+    .style('cursor','grab')
+    .call(d3.drag()
+      .on('start', (ev, d) => { if (!ev.active) sim.alphaTarget(.3).restart(); d.fx=d.x; d.fy=d.y; })
+      .on('drag',  (ev, d) => { d.fx=ev.x; d.fy=ev.y; })
+      .on('end',   (ev, d) => { if (!ev.active) sim.alphaTarget(0); d.fx=null; d.fy=null; })
+    );
+
+  const labelSel = svg.append('g').selectAll('text').data(nodes).enter().append('text')
+    .text(d => d.id.split(' ')[0].slice(0,8))
+    .attr('text-anchor','middle').attr('dy','0.35em')
+    .attr('fill','#fff').attr('font-size',10).attr('font-family','DM Sans')
+    .style('pointer-events','none');
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(validLinks).id(d => d.id).distance(120))
+    .force('charge', d3.forceManyBody().strength(-280))
+    .force('center', d3.forceCenter(W/2, H/2))
+    .force('collide', d3.forceCollide(36));
+
+  sim.on('tick', () => {
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    linkSel
+      .attr('x1', d => clamp(d.source.x, 30, W-30))
+      .attr('y1', d => clamp(d.source.y, 30, H-30))
+      .attr('x2', d => clamp(d.target.x, 30, W-30))
+      .attr('y2', d => clamp(d.target.y, 30, H-30));
+    nodeSel.attr('cx', d => d.x = clamp(d.x,30,W-30)).attr('cy', d => d.y = clamp(d.y,30,H-30));
+    labelSel.attr('x', d => d.x).attr('y', d => d.y);
+  });
+}
+
+// ══════════════════════════════════════════════
+//  UTIL
+// ══════════════════════════════════════════════
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>

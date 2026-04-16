@@ -1,0 +1,8 @@
+flask
+flask-cors
+pandas
+pyspellchecker
+anthropic
+gunicorn
+emoji
+langdetect
