@@ -1,8 +1,7 @@
 import os
 import re
 import json
-import io
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta
 
 from flask import Flask, request, jsonify
@@ -10,7 +9,7 @@ from flask_cors import CORS
 import pandas as pd
 import emoji
 from spellchecker import SpellChecker
-from anthropic import Anthropic
+from anthropic import Anthropic, AuthenticationError, RateLimitError
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
@@ -89,6 +88,10 @@ def parse_datetime(date_str: str, time_str: str):
 
 
 def parse_whatsapp_chat(text: str):
+    # Normalize non-standard whitespace inserted by WhatsApp iOS exports
+    # U+202F narrow no-break space appears between time and AM/PM on iPhone
+    text = text.replace('\u202f', ' ').replace('\u200e', '').replace('\u200f', '')
+
     messages = []
     current = None
 
@@ -150,10 +153,12 @@ def detect_language(df: pd.DataFrame) -> str:
     return 'español' if es_score >= en_score else 'inglés'
 
 
-def calculate_spelling_errors(df: pd.DataFrame, members: list):
-    spell_es = SpellChecker(language='es')
-    spell_en = SpellChecker(language='en')
+# Loaded once at startup — avoids re-reading compressed dictionary on every request
+_SPELL_ES = SpellChecker(language='es')
+_SPELL_EN = SpellChecker(language='en')
 
+
+def calculate_spelling_errors(df: pd.DataFrame, members: list):
     ignore_re = re.compile(
         r'^(\d+|[a-z]|https?|www|jaja+|jeje+|haha+|lol|xd|ok|'
         r'q|x|k|tb|tmb|pq|xq|wey|bro|si|no|ja|je)$', re.I
@@ -162,21 +167,30 @@ def calculate_spelling_errors(df: pd.DataFrame, members: list):
     stats = {m: {'errors': 0, 'total': 0} for m in members}
     error_freq: Counter = Counter()
 
-    for _, row in df[~df['is_system'] & ~df['is_media']].iterrows():
-        if not isinstance(row['content'], str) or row['sender'] not in stats:
+    # Build per-member word lists (cap rows for performance)
+    df_sample = df[~df['is_system'] & ~df['is_media']].head(5_000)
+    member_words: dict = {m: [] for m in members}
+    for _, row in df_sample.iterrows():
+        if not isinstance(row['content'], str) or row['sender'] not in member_words:
             continue
-        words = re.findall(r"\b[a-záéíóúüñ']{3,}\b", row['content'].lower())
+        words = [w for w in re.findall(r"\b[a-záéíóúüñ']{3,}\b", row['content'].lower())
+                 if not ignore_re.match(w)]
+        member_words[row['sender']].extend(words)
+
+    # Count word frequencies across all members
+    all_word_freq: Counter = Counter(w for ws in member_words.values() for w in ws)
+
+    # Identify words unknown to BOTH dictionaries (pure set ops — fast)
+    all_vocab = list(all_word_freq.keys())
+    unknowns = _SPELL_ES.unknown(all_vocab) & _SPELL_EN.unknown(all_vocab)
+
+    # Attribute errors back to members (no correction() call — avoids O(n²) edit distance)
+    for member, words in member_words.items():
         for word in words:
-            if ignore_re.match(word):
-                continue
-            stats[row['sender']]['total'] += 1
-            unknown_es = spell_es.unknown([word])
-            unknown_en = spell_en.unknown([word])
-            if unknown_es and unknown_en:
-                suggestion = spell_es.correction(word)
-                if suggestion and suggestion != word:
-                    stats[row['sender']]['errors'] += 1
-                    error_freq[f"{word}→{suggestion}"] += 1
+            stats[member]['total'] += 1
+            if word in unknowns:
+                stats[member]['errors'] += 1
+                error_freq[word] += 1
 
     ranking = sorted(
         [{'member': m,
@@ -188,13 +202,13 @@ def calculate_spelling_errors(df: pd.DataFrame, members: list):
     )
 
     frequent_errors = [
-        {'word': pair.split('→')[0], 'suggestion': pair.split('→')[1], 'count': cnt}
-        for pair, cnt in error_freq.most_common(20)
+        {'word': word, 'count': cnt}
+        for word, cnt in error_freq.most_common(20)
     ]
 
     word_cloud_data = [
-        {'text': pair.split('→')[0], 'weight': cnt}
-        for pair, cnt in error_freq.most_common(60)
+        {'text': word, 'weight': cnt}
+        for word, cnt in error_freq.most_common(60)
     ]
 
     return ranking, frequent_errors, word_cloud_data
@@ -312,6 +326,7 @@ def get_top_ngrams(df: pd.DataFrame, n=2, top_k=10):
 # ─── CLAUDE AI ──────────────────────────────────────────────────────────────
 
 def call_claude_api(api_key: str, stats: dict, language: str) -> dict:
+    """Returns parsed AI result dict, or raises with a reason string attached as .reason."""
     client = Anthropic(api_key=api_key)
 
     lang_instr = (
@@ -340,11 +355,22 @@ Devuelve ÚNICAMENTE JSON válido (sin backticks ni texto extra) con esta estruc
 
 Incluye al menos 3 temas y perfiles para cada miembro listado."""
 
-    msg = client.messages.create(
-        model='claude-sonnet-4-5',
-        max_tokens=2048,
-        messages=[{'role': 'user', 'content': prompt}],
-    )
+    try:
+        msg = client.messages.create(
+            model='claude-sonnet-4-6',
+            max_tokens=2048,
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+    except AuthenticationError as exc:
+        exc.reason = 'invalid_key'
+        raise
+    except RateLimitError as exc:
+        exc.reason = 'quota_exceeded'
+        raise
+    except Exception as exc:
+        exc.reason = 'network_error'
+        raise
+
     raw = msg.content[0].text.strip()
     try:
         return json.loads(raw)
@@ -359,18 +385,27 @@ Incluye al menos 3 temas y perfiles para cada miembro listado."""
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    if 'file' not in request.files or 'api_key' not in request.form:
-        return jsonify({'error': 'Faltan campos requeridos: file y api_key'}), 400
+    if 'file' not in request.files:
+        return jsonify({'error': 'Falta el archivo de chat'}), 400
 
     file = request.files['file']
-    api_key = request.form['api_key'].strip()
+    api_key = request.form.get('api_key', '').strip()
 
     if not file or file.filename == '':
         return jsonify({'error': 'No se seleccionó ningún archivo'}), 400
 
-    # Read file
+    # Read file — try encodings in order; WhatsApp exports vary by platform/region
     try:
-        content = file.read().decode('utf-8', errors='ignore')
+        raw = file.read()
+        content = None
+        for enc in ('utf-8-sig', 'utf-8', 'latin-1'):
+            try:
+                content = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if content is None:
+            content = raw.decode('latin-1', errors='replace')
     except Exception as exc:
         return jsonify({'error': f'Error leyendo el archivo: {exc}'}), 400
 
@@ -394,11 +429,15 @@ def analyze():
     df['month'] = df['datetime'].dt.to_period('M').astype(str)
     df['quarter'] = df['datetime'].dt.to_period('Q').astype(str)
 
-    # Members (top 15 real participants)
+    # Members: require at least 1 real text message (excludes system/media-only senders)
+    df_text = df[~df['is_system'] & ~df['is_media']]
     members = [
-        m for m in df[~df['is_system']]['sender'].value_counts().index
+        m for m in df_text['sender'].value_counts().index
         if m and len(m) <= 50
     ][:15]
+
+    if not members:
+        return jsonify({'error': 'No se encontraron participantes reales en el chat. Verifica que el archivo sea una exportación válida de WhatsApp.'}), 400
 
     df_real = df[df['sender'].isin(members) & ~df['is_system']].copy()
 
@@ -498,12 +537,13 @@ def analyze():
 
     ai_available = False
     ai_result = None
+    ai_error = None
     if len(api_key) > 10:
         try:
             ai_result = call_claude_api(api_key, stats_summary, language)
             ai_available = True
-        except Exception:
-            ai_available = False
+        except Exception as exc:
+            ai_error = getattr(exc, 'reason', 'network_error')
 
     return jsonify({
         'metadata': {
@@ -542,6 +582,7 @@ def analyze():
         },
         'ai': {
             'available': ai_available,
+            'error': ai_error,
             'analisis_vibe': (ai_result or {}).get('analisis_vibe', ''),
             'mapeo_temas':   (ai_result or {}).get('mapeo_temas', []),
             'perfiles_personales': (ai_result or {}).get('perfiles_personales', {}),

@@ -5,4 +5,3 @@ pyspellchecker
 anthropic
 gunicorn
 emoji
-langdetect

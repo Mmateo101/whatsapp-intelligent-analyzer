@@ -220,9 +220,9 @@ label{display:block;font-size:.85rem;font-weight:600;color:var(--dim);margin-bot
       personalidades y dinámicas de tu grupo.</p>
     <div class="card">
       <div class="form-group">
-        <label>Claude API Key</label>
+        <label>Claude API Key <span style="color:var(--dim);font-weight:400;text-transform:none">(opcional — para análisis IA)</span></label>
         <div class="input-wrap">
-          <input type="password" id="apiKey" placeholder="sk-ant-api03-..." autocomplete="off">
+          <input type="password" id="apiKey" placeholder="sk-ant-api03-... (deja vacío para análisis básico)" autocomplete="off">
           <button class="eye-btn" id="eyeBtn" onclick="toggleEye()" title="Mostrar/ocultar">👁</button>
         </div>
       </div>
@@ -262,6 +262,7 @@ label{display:block;font-size:.85rem;font-weight:600;color:var(--dim);margin-bot
     <div class="trunc-banner" id="truncBanner">
       ⚠️ Analizando los últimos 50,000 mensajes de tu chat
     </div>
+    <button onclick="newAnalysis()" style="margin-left:auto;padding:.45rem 1rem;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--dim);font-size:.85rem;cursor:pointer;transition:all .2s" onmouseover="this.style.color='var(--text)';this.style.borderColor='var(--accent)'" onmouseout="this.style.color='var(--dim)';this.style.borderColor='var(--border)'">↩ Nuevo análisis</button>
   </div>
   <nav class="tab-nav">
     <button class="tab-btn active" onclick="switchTab(1)">📊 Resumen</button>
@@ -329,7 +330,7 @@ label{display:block;font-size:.85rem;font-weight:600;color:var(--dim);margin-bot
       <div class="section-title">📋 Errores Frecuentes</div>
       <div style="overflow-x:auto">
         <table class="data-table" id="errTable">
-          <thead><tr><th>#</th><th>Palabra Escrita</th><th>Sugerencia Correcta</th><th>Frecuencia</th></tr></thead>
+          <thead><tr><th>#</th><th>Palabra no reconocida</th><th>Frecuencia</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -407,6 +408,18 @@ let currentData = null;
 // ══════════════════════════════════════════════
 //  WELCOME HELPERS
 // ══════════════════════════════════════════════
+function newAnalysis() {
+  // Reset form state
+  document.getElementById('fileInput').value = '';
+  document.getElementById('fileName').textContent = '';
+  document.getElementById('fileLabelText').textContent = 'Haz clic o arrastra tu archivo aquí';
+  document.getElementById('truncBanner').style.display = 'none';
+  // Destroy all charts to free memory
+  Object.keys(charts).forEach(k => { if (charts[k]) { charts[k].destroy(); delete charts[k]; } });
+  currentData = null;
+  showScreen('welcomeScreen');
+}
+
 function toggleEye() {
   const inp = document.getElementById('apiKey');
   inp.type = inp.type === 'password' ? 'text' : 'password';
@@ -498,6 +511,7 @@ async function handleSubmit() {
     currentData = data;
     clearInterval(loadingInterval);
     renderDashboard(data);
+    btn.disabled = false;
     showScreen('dashboardScreen');
 
   } catch (err) {
@@ -569,7 +583,7 @@ function renderTab1(d) {
     oSec.innerHTML = `
       <div class="ai-placeholder oracle-block">
         <div class="ph-icon">🔮</div>
-        <p><strong>No disponible — requiere IA</strong><br>Agrega una Claude API Key válida para obtener el análisis narrativo.</p>
+        <p>${aiErrorMsg(d.ai.error, 'el análisis narrativo')}</p>
       </div>`;
   }
 
@@ -728,7 +742,7 @@ function renderTab2(d) {
       <div class="member-avatar" style="background:${color}">${initials}</div>
       <div class="member-name">${escHtml(name)}</div>
       <div class="member-role" style="color:var(--dim)">Perfil no disponible</div>
-      <div class="member-desc" style="color:var(--danger);font-size:.8rem">No disponible — requiere IA</div>
+      <div class="member-desc" style="color:var(--danger);font-size:.8rem">${aiErrorMsg(d.ai.error, 'perfiles')}</div>
     </div>`;
   }).join('') + '</div>';
 }
@@ -765,7 +779,6 @@ function renderTab3(d) {
   const tbody = document.querySelector('#errTable tbody');
   tbody.innerHTML = sp.frequent_errors.slice(0, 20).map((e, i) =>
     `<tr><td>${i+1}</td><td style="color:#ef4444">${escHtml(e.word)}</td>
-     <td style="color:#10b981">→ ${escHtml(e.suggestion)}</td>
      <td>${e.count}</td></tr>`
   ).join('');
 
@@ -964,6 +977,18 @@ function escHtml(str) {
   return String(str ?? '')
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function aiErrorMsg(reason, feature) {
+  if (!reason) {
+    return `<strong>No disponible — requiere IA</strong><br>Agrega una Claude API Key para obtener ${escHtml(feature)}.`;
+  }
+  const msgs = {
+    invalid_key:    `<strong style="color:var(--danger)">API Key inválida</strong><br>La clave no es reconocida por Claude. Verifica que sea correcta.`,
+    quota_exceeded: `<strong style="color:var(--warn)">Créditos agotados</strong><br>Tu cuenta de Claude no tiene saldo disponible.`,
+    network_error:  `<strong style="color:var(--warn)">Error de conexión</strong><br>No se pudo contactar la API de Claude. Intenta de nuevo.`,
+  };
+  return msgs[reason] || msgs.network_error;
 }
 </script>
 </body>
