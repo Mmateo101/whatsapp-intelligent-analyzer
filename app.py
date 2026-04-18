@@ -8,7 +8,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
 import emoji
-from spellchecker import SpellChecker
 from anthropic import Anthropic, AuthenticationError, RateLimitError
 
 app = Flask(__name__, static_folder='static', static_url_path='')
@@ -153,21 +152,346 @@ def detect_language(df: pd.DataFrame) -> str:
     return 'español' if es_score >= en_score else 'inglés'
 
 
-# Loaded once at startup — avoids re-reading compressed dictionary on every request
-_SPELL_ES = SpellChecker(language='es')
-_SPELL_EN = SpellChecker(language='en')
+# ─── LIGHTWEIGHT SPELL CHECKER ───────────────────────────────────────────────
+# Replaces pyspellchecker (~60 MB of frequency dicts) with a frozenset.
+# Memory: ~3 MB vs ~60 MB.  Startup: instant vs ~8 seconds.
+#
+# Strategy: a word is NOT an error if:
+#   (a) it appears in _BASE_VOCAB (core Spanish + English words), OR
+#   (b) it appears 2+ times in the chat itself (probably intentional slang/name).
+# Only words that are both rare in the chat AND absent from base vocab are flagged.
+
+def _build_vocab() -> frozenset:
+    words = set()
+
+    # Spanish — function words, pronouns, conjunctions, prepositions, adverbs
+    words.update("""
+    el la los las un una unos unas de del en con por para sin sobre bajo ante
+    tras a al y o u e ni pero sino aunque que si no ya muy mas menos tan tanto
+    asi bien mal aqui ahi alli hoy ayer manana ahora antes despues tambien
+    tampoco solo todo todos nada algo alguien nadie siempre nunca casi cerca
+    lejos entonces luego pues claro quizas tal vez incluso ademas mientras
+    durante entre hasta desde hacia segun excepto salvo osea eso esa ese esto
+    igual mismo misma mismos mismas otro otra otros otras cada cual cuales
+    quien quienes donde cuando como cuanto cuanta cuantos cuantas
+    apenas aunque porque porqué sino sinó sino acá allá acá tras via
+    """.split())
+
+    # Spanish pronouns
+    words.update("""
+    yo tú él ella nosotros vosotros ellos ellas usted ustedes
+    me te se nos os le les lo mi mis tu tus su sus
+    nuestro nuestra nuestros nuestras vuestro vuestra
+    mio mia tuyo tuya suyo suya
+    este esta estos estas ese esa esos esas aquel aquella aquellos aquellas
+    """.split())
+
+    # Spanish verbs — infinitives + most common conjugations
+    words.update("""
+    ser estar tener hacer ir venir poder querer saber ver dar decir llegar
+    pasar llevar salir poner sentir creer conocer vivir quedar pensar parecer
+    traer perder necesitar esperar buscar usar trabajar empezar entrar recordar
+    dejar abrir leer escribir pagar cambiar ganar jugar correr volver comprar
+    conseguir ayudar lograr crear caer cerrar incluir servir morir subir bajar
+    olvidar terminar comenzar continuar estudiar explicar preguntar responder
+    intentar aprender escuchar mirar tocar comer beber dormir despertar caminar
+    gritar llorar reir decidir elegir preferir aceptar permitir invitar celebrar
+    preparar organizar planear viajar regresar visitar explorar descubrir mejorar
+    aumentar parar detener mover limpiar guardar mostrar aparecer funcionar
+    depender resultar ocurrir existir seguir hablar llamar sacar acabar contar
+    pedir tomar deber nacer crecer entender comprender manejar pasar revisar
+    mandar probar jugar salvar ganar perder compartir cumplir avanzar
+    soy eres somos sois son era eras éramos eran
+    fui fuiste fue fuimos fueron
+    seré serás será seremos seréis serán
+    sería serías seríamos serían
+    sido siendo
+    tengo tienes tiene tenemos tenéis tienen
+    tenía tenías teníamos tenían
+    tuvo tuve tuviste tuvimos tuvieron
+    tendré tendrás tendrá tendremos tendréis tendrán
+    hago haces hace hacemos hacéis hacen
+    hice hiciste hizo hicimos hicieron
+    haré harás hará haremos haréis harán
+    voy vas va vamos vais van
+    fui fuiste fue fuimos fueron
+    iré irás irá iremos iréis irán
+    vine viniste vino vinimos vinieron
+    vengo vienes viene venimos vienen
+    vendré vendrás vendrá vendremos vendrán
+    puedo puedes puede podemos pueden
+    pudo pude pudiste pudimos pudieron
+    podré podrás podrá podremos podrán
+    quiero quieres quiere queremos quieren
+    quiso quisiste quisimos quisieron
+    querré querrás querrá querremos querrán
+    sé sabes sabe sabemos saben supo supe
+    veo ves ve vemos ven vió vi
+    doy das da damos dan dio di
+    digo dices dice decimos dicen dijo dije dijiste dijimos dijeron
+    diré dirás dirá diremos diréis dirán
+    hay hubo había habrá habría habría
+    estoy estás está estamos estáis están
+    estaba estabas estábamos estaban
+    estuve estuviste estuvo estuvimos estuvieron
+    estaré estarás estará estaremos estarán
+    pienso piensas piensa pensamos piensan
+    pensé pensaste pensó pensamos pensaron
+    puedo puedes puede podemos podemos
+    hablo hablas habla hablamos hablan
+    hablé hablaste habló hablamos hablaron
+    llego llegas llega llegamos llegan
+    llegué llegaste llegó llegamos llegaron
+    vivo vives vive vivimos viven
+    como comes come comemos comen
+    sigo sigues sigue seguimos siguen
+    quedo quedas queda quedamos quedan
+    pongo pones pone ponemos ponen
+    salgo sales sale salimos salen
+    traigo traes trae traemos traen
+    """.split())
+
+    # Spanish nouns — people, places, time, objects, concepts
+    words.update("""
+    persona personas gente vida tiempo lugar casa trabajo día mes año semana
+    hora minuto segundo grupo chat mensaje foto video audio llamada
+    amigo amiga amigos amigas familia hijo hija padre madre hermano hermana
+    abuela abuelo novio novia esposo esposa compañero compañera
+    profesor profesora profe maestro maestra estudiante alumno alumna
+    jefe jefa doctor doctora chico chica niño niña adulto señor señora
+    chavo chava cuate carnal mano bro wey güey tipo tipa gente
+    dinero precio costo gasto
+    comida agua café bebida cerveza pizza taco tacos hamburguesa
+    pan leche azúcar sal arroz frijoles carne pollo pescado fruta verdura postre
+    desayuno almuerzo comida cena snack antojo
+    ciudad país estado pueblo colonia calle avenida departamento cuarto sala
+    cocina baño jardín parque plaza mercado tienda oficina escuela colegio
+    universidad hospital iglesia restaurante bar hotel aeropuerto estación
+    carretera camino carro auto autobús metro tren avión moto bici
+    ropa camisa pantalón vestido zapatos tenis calcetines playera sudadera
+    libro cuaderno lápiz pluma computadora laptop teléfono celular pantalla
+    internet red aplicación app juego película canción música álbum artista
+    cosa forma tipo parte punto lado razón causa efecto resultado idea
+    opinión tema asunto problema solución plan proyecto esfuerzo apoyo cambio
+    verdad mentira historia cuento chiste broma pregunta respuesta noticia
+    examen tarea exposición calificación nota materia semestre período
+    partido jugador equipo gol punto cancha campo estadio torneo campeonato
+    boleto entrada concierto evento fiesta reunión cita viaje destino
+    clase práctica trabajo proyecto entrega fechas
+    foto imagen video clip meme sticker reacción
+    """.split())
+
+    # Spanish adjectives
+    words.update("""
+    bueno buena buenos buenas malo mala malos malas grande pequeño alto bajo
+    largo corto gordo flaco delgado bonito feo guapo guapa lindo linda
+    rápido lento fácil difícil importante necesario posible imposible verdadero
+    falso seguro peligroso libre ocupado cansado feliz triste enojado asustado
+    emocionado sorprendido aburrido enfermo sano rico pobre fuerte débil
+    nuevo viejo joven mayor menor primero último siguiente anterior próximo
+    diferente igual mismo distinto especial normal extraño raro increíble
+    perfecto imperfecto interesante aburrido divertido chistoso gracioso
+    serio tranquilo nervioso ansioso estresado relajado contento alegre
+    genial chido chida padre cool pesado intenso heavy brutal
+    """.split())
+
+    # Spanish greetings, exclamations, discourse markers
+    words.update("""
+    hola buenas buenos días tardes noches bienvenido bienvenida adiós chao
+    gracias por favor perdona disculpa salud felicidades suerte ánimo
+    vale venga dale vamos anda ven mira oye escucha sigue espera para claro
+    exacto obvio obvio correcto incorrecto cierto verdad mentira
+    wow ohhh mmm ahh ohh ugh ehh umm pues sea ósea osea oki
+    """.split())
+
+    # Spanish numbers and calendar
+    words.update("""
+    uno dos tres cuatro cinco seis siete ocho nueve diez once doce trece
+    catorce quince dieciséis diecisiete dieciocho diecinueve veinte
+    treinta cuarenta cincuenta sesenta setenta ochenta noventa cien
+    doscientos trescientos mil millón primero segundo tercero cuarto quinto
+    lunes martes miércoles jueves viernes sábado domingo
+    enero febrero marzo abril mayo junio julio agosto septiembre octubre
+    noviembre diciembre
+    """.split())
+
+    # More verb conjugations — preterite and common forms that get flagged
+    words.update("""
+    perdí perdiste perdió perdimos perdieron
+    gané ganaste ganó ganamos ganaron
+    aprendí aprendiste aprendió aprendimos aprendieron
+    comí comiste comió comimos comieron
+    bebí bebiste bebió bebimos bebieron
+    dormí dormiste durmió dormimos durmieron
+    salí saliste salió salimos salieron
+    llegué llegaste llegó llegamos llegaron
+    entré entraste entró entramos entraron
+    empecé empezaste empezó empezamos empezaron
+    terminé terminaste terminó terminamos terminaron
+    estudié estudiaste estudió estudiamos estudiaron
+    trabajé trabajaste trabajó trabajamos trabajaron
+    compré compraste compró compramos compraron
+    jugué jugaste jugó jugamos jugaron
+    corrí corriste corrió corrimos corrieron
+    viví viviste vivió vivimos vivieron
+    sentí sentiste sintió sentimos sintieron
+    pedí pediste pidió pedimos pidieron
+    volví volviste volvió volvimos volvieron
+    subí subiste subió subimos subieron
+    bajé bajaste bajó bajamos bajaron
+    conocí conociste conoció conocimos conocieron
+    saqué sacaste sacó sacamos sacaron
+    metí metiste metió metimos metieron
+    llamé llamaste llamó llamamos llamaron
+    mandé mandaste mandó mandamos mandaron
+    pagué pagaste pagó pagamos pagaron
+    cambié cambiaste cambió cambiamos cambiaron
+    moví moviste movió movimos movieron
+    abrí abriste abrió abrimos abrieron
+    cerré cerraste cerró cerramos cerraron
+    leí leíste leyó leímos leyeron
+    escribí escribiste escribió escribimos escribieron
+    busqué buscaste buscó buscamos buscaron
+    encontré encontraste encontró encontramos encontraron
+    dejé dejaste dejó dejamos dejaron
+    probé probaste probó probamos probaron
+    pasé pasaste pasó pasamos pasaron
+    traté trataste trató tratamos trataron
+    ayudé ayudaste ayudó ayudamos ayudaron
+    viajé viajaste viajó viajamos viajaron
+    regresé regresaste regresó regresamos regresaron
+    invité invitaste invitó invitamos invitaron
+    celebré celebraste celebró celebramos celebraron
+    recordé recordaste recordó recordamos recordaron
+    olvidé olvidaste olvidó olvidamos olvidaron
+    pregunté preguntaste preguntó preguntamos preguntaron
+    respondí respondiste respondió respondimos respondieron
+    expliqué explicaste explicó explicamos explicaron
+    decidi decidiste decidió decidimos decidieron
+    compartí compartiste compartió compartimos compartieron
+    """.split())
+
+    # Common adverbs and time expressions
+    words.update("""
+    anoche antier antayer temprano tarde pronto próximamente recientemente
+    finalmente básicamente generalmente normalmente especialmente
+    definitivamente probablemente posiblemente seguramente exactamente
+    perfectamente fácilmente rápidamente lentamente claramente obviamente
+    directamente absolutamente completamente totalmente únicamente
+    realmente verdaderamente simplemente solamente únicamente prácticamente
+    """.split())
+
+    # Common nouns missed
+    words.update("""
+    crimen milagro momento detalle recuerdo chisme rumor sorpresa noticia
+    susto accidente problema solución situación condición conexión acción
+    reacción emoción sensación intención decisión descripción explicación
+    información comunicación conversación discusión argumento comentario
+    opinión posición versión función aplicación operación dirección
+    historia imagen cuenta número lista mensaje respuesta pregunta idea
+    concepto significado sentido razón motivo objetivo propósito resultado
+    beneficio ventaja desventaja riesgo oportunidad posibilidad probabilidad
+    realidad verdad mentira fantasía sueño pesadilla recuerdo olvido
+    inicio final principio final centro medio borde límite nivel grado
+    tipo clase especie forma manera modo estilo calidad cantidad valor
+    tamaño peso altura velocidad temperatura color sonido sabor olor
+    partido juego match torneo competencia clasificación semifinal final
+    gol autogol penalti penalty árbitro jugador portero defensa mediocampo
+    aficionado hincha estadio grada tribuna cancha campo terreno
+    """.split())
+
+    # Common adjectives missed
+    words.update("""
+    histórico único famoso popular conocido desconocido complicado sencillo
+    simple complejo completo incompleto disponible imposible interesante
+    aburrido emocionante divertido gracioso chistoso serio formal informal
+    oficial particular personal profesional académico económico político
+    social cultural deportivo artístico musical cinematográfico
+    increíble impresionante espectacular extraordinario maravilloso
+    terrible horrible espantoso aterrador decepcionante frustrante
+    cansado agotado activo pasivo positivo negativo neutral
+    moderno antiguo clásico contemporáneo actual reciente futuro pasado
+    real virtual físico digital local global nacional internacional
+    """.split())
+
+    # Common reflexive and compound verb forms
+    words.update("""
+    enseñarte explicarte ayudarte esperarte llamarte mandarte
+    contarte decirte pedirte invitarte llevarte traerte
+    enseñarme explicarme ayudarme llamarme mandarte
+    pasándolo haciéndolo diciéndolo viéndolo
+    estamos están estuve estuviste estuvo estuvimos estuvieron
+    """.split())
+
+    # Common words frequently missed — cinema, conditional, slang, informal expressions
+    words.update("""
+    cine teatro concierto evento festival espectáculo actuación presentación
+    podría podrías podríamos podrían
+    querría querrías querríamos querrían
+    debería deberías deberíamos deberían
+    tendría tendrías tendríamos tendrían
+    habría habrías habríamos habrían
+    sería serías seríamos serían
+    checa checar chécalo chécala
+    oigan órale ándale híjole caray
+    neta mero mera chamba pedo gana
+    carísimo baratísimo facilísimo difícilísimo
+    tranquilo tranquila tranquilos tranquilas
+    genial brutal increíble emocionante divertido divertida
+    perfecto perfecta perfectos perfectas
+    candidato candidata candidatos candidatas
+    promedio calificaciones promedios boletas
+    práctica prácticas entrega entregas fecha fechas
+    whatsapp instagram facebook twitter tiktok youtube
+    """.split())
+
+    # English — core vocabulary for mixed-language chats
+    words.update("""
+    the and are was were been have has had will would could should may might
+    that this with from they them their there then than those these
+    you your him her our out some more very also just one all but get did
+    for not its say see use let say yes okay yes not who how what why when
+    where which can your him her our its will would could should
+    hello goodbye thanks please sorry good bad great nice cool wow
+    like love hate want need know think feel make take give find keep put
+    come see look try ask work help start stop move turn buy sell pay
+    call text send show tell remember believe understand decide choose
+    today tomorrow yesterday morning afternoon evening night week month year
+    time moment always never sometimes often usually
+    friend family brother sister mom dad parent child baby girl man woman
+    person people group team class school homework test project teacher
+    student food coffee drink water beer breakfast lunch dinner
+    phone video picture movie music song game
+    actually basically really totally definitely probably maybe sure right
+    going getting coming done ready wait hold let
+    """.split())
+
+    # Normalize accented → plain for lookup flexibility
+    accented = {
+        'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ü': 'u', 'ñ': 'n'
+    }
+    stripped_words = set()
+    for w in words:
+        sw = w
+        for a, b in accented.items():
+            sw = sw.replace(a, b)
+        stripped_words.add(sw)
+
+    return frozenset(words | stripped_words)
+
+
+_BASE_VOCAB: frozenset = _build_vocab()
 
 
 def calculate_spelling_errors(df: pd.DataFrame, members: list):
     ignore_re = re.compile(
         r'^(\d+|[a-z]|https?|www|jaja+|jeje+|haha+|lol|xd|ok|'
-        r'q|x|k|tb|tmb|pq|xq|wey|bro|si|no|ja|je)$', re.I
+        r'q|x|k|tb|tmb|pq|xq|wey|bro|si|no|ja|je|bye|omg|wow)$', re.I
     )
 
     stats = {m: {'errors': 0, 'total': 0} for m in members}
     error_freq: Counter = Counter()
 
-    # Build per-member word lists (cap rows for performance)
     df_sample = df[~df['is_system'] & ~df['is_media']].head(5_000)
     member_words: dict = {m: [] for m in members}
     for _, row in df_sample.iterrows():
@@ -177,18 +501,16 @@ def calculate_spelling_errors(df: pd.DataFrame, members: list):
                  if not ignore_re.match(w)]
         member_words[row['sender']].extend(words)
 
-    # Count word frequencies across all members
-    all_word_freq: Counter = Counter(w for ws in member_words.values() for w in ws)
+    # Words used 2+ times across the entire chat are considered intentional
+    # (slang, names, abbreviations users repeat on purpose)
+    global_freq: Counter = Counter(w for ws in member_words.values() for w in ws)
+    chat_vocab = {w for w, c in global_freq.items() if c >= 2}
 
-    # Identify words unknown to BOTH dictionaries (pure set ops — fast)
-    all_vocab = list(all_word_freq.keys())
-    unknowns = _SPELL_ES.unknown(all_vocab) & _SPELL_EN.unknown(all_vocab)
-
-    # Attribute errors back to members (no correction() call — avoids O(n²) edit distance)
+    # A word is an error only if it's absent from the base vocab AND rare in this chat
     for member, words in member_words.items():
         for word in words:
             stats[member]['total'] += 1
-            if word in unknowns:
+            if word not in _BASE_VOCAB and word not in chat_vocab:
                 stats[member]['errors'] += 1
                 error_freq[word] += 1
 
@@ -420,21 +742,21 @@ def analyze():
     if truncated:
         raw_msgs = raw_msgs[-50_000:]
 
-    # DataFrame
+    # DataFrame — use categorical dtype for sender to cut string memory ~4x
     df = pd.DataFrame(raw_msgs)
     df = df.dropna(subset=['datetime'])
     df['datetime'] = pd.to_datetime(df['datetime'])
+    df['sender'] = df['sender'].astype('category')
     df['hour'] = df['datetime'].dt.hour
     df['day_of_week'] = df['datetime'].dt.dayofweek
     df['month'] = df['datetime'].dt.to_period('M').astype(str)
     df['quarter'] = df['datetime'].dt.to_period('Q').astype(str)
 
-    # Members: require at least 1 real text message (excludes system/media-only senders)
+    # Members: require at least 1 real text message (excludes system/media-only senders).
+    # Use astype(str) so categorical dtype doesn't include zero-count categories.
     df_text = df[~df['is_system'] & ~df['is_media']]
-    members = [
-        m for m in df_text['sender'].value_counts().index
-        if m and len(m) <= 50
-    ][:15]
+    vc = df_text['sender'].astype(str).value_counts()
+    members = [m for m in vc[vc > 0].index if m and len(m) <= 50][:15]
 
     if not members:
         return jsonify({'error': 'No se encontraron participantes reales en el chat. Verifica que el archivo sea una exportación válida de WhatsApp.'}), 400
