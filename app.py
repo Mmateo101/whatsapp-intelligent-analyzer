@@ -1,9 +1,11 @@
 import os
 import re
 import json
+import gc
 from collections import Counter
 from datetime import datetime, timedelta
 
+import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
@@ -492,23 +494,30 @@ def calculate_spelling_errors(df: pd.DataFrame, members: list):
     stats = {m: {'errors': 0, 'total': 0} for m in members}
     error_freq: Counter = Counter()
 
-    df_sample = df[~df['is_system'] & ~df['is_media']].head(5_000)
+    pool = df[~df['is_system'] & ~df['is_media'] & df['content'].notna()]
+    sample_size = min(500, len(pool))
+    df_sample = pool.sample(n=sample_size, random_state=42) if sample_size > 0 else pool
+
     member_words: dict = {m: [] for m in members}
     for _, row in df_sample.iterrows():
-        if not isinstance(row['content'], str) or row['sender'] not in member_words:
+        sender = str(row['sender'])
+        if sender not in member_words:
             continue
-        words = [w for w in re.findall(r"\b[a-záéíóúüñ']{3,}\b", row['content'].lower())
+        words = [w for w in re.findall(r"\b[a-záéíóúüñ']{3,}\b", str(row['content']).lower())
                  if not ignore_re.match(w)]
-        member_words[row['sender']].extend(words)
+        member_words[sender].extend(words)
 
-    # Words used 2+ times across the entire chat are considered intentional
-    # (slang, names, abbreviations users repeat on purpose)
+    # Words used 2+ times across the sample are considered intentional
     global_freq: Counter = Counter(w for ws in member_words.values() for w in ws)
     chat_vocab = {w for w, c in global_freq.items() if c >= 2}
 
-    # A word is an error only if it's absent from the base vocab AND rare in this chat
+    # Per member: deduplicate then cap at 2,000 unique words before checking
     for member, words in member_words.items():
-        for word in words:
+        seen: dict = {}
+        for w in words:
+            seen.setdefault(w, True)
+        unique_words = list(seen.keys())[:2_000]
+        for word in unique_words:
             stats[member]['total'] += 1
             if word not in _BASE_VOCAB and word not in chat_vocab:
                 stats[member]['errors'] += 1
@@ -537,22 +546,29 @@ def calculate_spelling_errors(df: pd.DataFrame, members: list):
 
 
 def detect_bursts(df: pd.DataFrame, window_min=30, min_msgs=12):
-    valid = df[~df['is_system']].dropna(subset=['datetime']).sort_values('datetime')
+    valid = df[~df['is_system']].dropna(subset=['datetime']).sort_values('datetime').reset_index(drop=True)
+    if len(valid) < min_msgs:
+        return []
+
+    times = valid['datetime'].values.astype(np.int64)  # nanoseconds since epoch
+    window_ns = int(pd.Timedelta(minutes=window_min).total_seconds() * 1e9)
+
     bursts = []
     i = 0
-    rows = valid.reset_index(drop=True)
-    while i < len(rows):
-        t0 = rows.iloc[i]['datetime']
-        t1 = t0 + timedelta(minutes=window_min)
-        window = rows[(rows['datetime'] >= t0) & (rows['datetime'] <= t1)]
-        if len(window) >= min_msgs:
+    n = len(valid)
+    while i < n:
+        t1 = times[i] + window_ns
+        # O(log n) binary search instead of O(n) boolean scan
+        j = int(np.searchsorted(times, t1, side='right'))
+        count = j - i
+        if count >= min_msgs:
             bursts.append({
-                'start': t0.strftime('%d/%m/%Y %H:%M'),
-                'message_count': len(window),
-                'participants': window['sender'].unique().tolist(),
-                'sample': str(window.iloc[0]['content'])[:120],
+                'start': valid.at[i, 'datetime'].strftime('%d/%m/%Y %H:%M'),
+                'message_count': count,
+                'participants': valid.iloc[i:j]['sender'].astype(str).unique().tolist(),
+                'sample': str(valid.at[i, 'content'])[:120],
             })
-            i += len(window)
+            i = j
         else:
             i += 1
     return bursts[:20]
@@ -560,35 +576,51 @@ def detect_bursts(df: pd.DataFrame, window_min=30, min_msgs=12):
 
 def calculate_interaction_network(df: pd.DataFrame, members: list):
     valid = df[~df['is_system']].dropna(subset=['datetime']).sort_values('datetime').reset_index(drop=True)
-    pairs: Counter = Counter()
-    for i in range(1, len(valid)):
-        prev, curr = valid.iloc[i - 1], valid.iloc[i]
-        if prev['sender'] != curr['sender'] and prev['sender'] in members and curr['sender'] in members:
-            diff_min = (curr['datetime'] - prev['datetime']).total_seconds() / 60
-            if diff_min <= 15:
-                pairs[f"{curr['sender']}→{prev['sender']}"] += 1
 
-    return sorted(
-        [{'source': p.split('→')[0], 'target': p.split('→')[1], 'weight': c}
-         for p, c in pairs.most_common(40)],
-        key=lambda x: x['weight'], reverse=True
+    sender = valid['sender'].astype(str)
+    prev_sender = sender.shift(1)
+    diff_min = (valid['datetime'] - valid['datetime'].shift(1)).dt.total_seconds() / 60
+
+    members_set = set(members)
+    mask = (
+        (sender != prev_sender) &
+        sender.isin(members_set) &
+        prev_sender.isin(members_set) &
+        (diff_min <= 15)
     )
+
+    curr_s = sender[mask]
+    prev_s = prev_sender[mask]
+    pairs = (curr_s + '→' + prev_s).value_counts()
+
+    result = []
+    for pair, count in pairs.head(40).items():
+        parts = pair.split('→', 1)
+        if len(parts) == 2:
+            result.append({'source': parts[0], 'target': parts[1], 'weight': int(count)})
+    return result
 
 
 def calculate_ghosting(df: pd.DataFrame, members: list):
     valid = df[~df['is_system']].dropna(subset=['datetime']).sort_values('datetime').reset_index(drop=True)
+
+    sender = valid['sender'].astype(str)
+    next_sender = sender.shift(-1)
+    diff_h = (valid['datetime'].shift(-1) - valid['datetime']).dt.total_seconds() / 3600
+
+    members_set = set(members)
     ghost = {m: {'sent': 0, 'ghosted': 0} for m in members}
 
-    for i in range(len(valid) - 1):
-        curr, nxt = valid.iloc[i], valid.iloc[i + 1]
-        s = curr['sender']
-        if s not in ghost:
-            continue
-        ghost[s]['sent'] += 1
-        if curr['sender'] != nxt['sender']:
-            diff_h = (nxt['datetime'] - curr['datetime']).total_seconds() / 3600
-            if diff_h > 24:
-                ghost[s]['ghosted'] += 1
+    # Exclude last row (next_sender is NaN)
+    valid_rows = sender.isin(members_set) & next_sender.notna()
+
+    sent_counts = sender[valid_rows].value_counts()
+    ghosted_mask = valid_rows & (sender != next_sender) & (diff_h > 24)
+    ghosted_counts = sender[ghosted_mask].value_counts()
+
+    for m in members:
+        ghost[m]['sent'] = int(sent_counts.get(m, 0))
+        ghost[m]['ghosted'] = int(ghosted_counts.get(m, 0))
 
     return sorted(
         [{'member': m,
@@ -602,19 +634,21 @@ def calculate_ghosting(df: pd.DataFrame, members: list):
 
 def calculate_triple_texting(df: pd.DataFrame, members: list):
     valid = df[~df['is_system']].sort_values('datetime').reset_index(drop=True)
-    counts: Counter = Counter()
-    i = 0
-    while i < len(valid):
-        sender = valid.iloc[i]['sender']
-        run = 1
-        while i + run < len(valid) and valid.iloc[i + run]['sender'] == sender:
-            run += 1
-        if run >= 3 and sender in members:
-            counts[sender] += 1
-        i += run
+    sender = valid['sender'].astype(str)
+
+    # Assign a group ID each time the sender changes
+    prev_sender = sender.shift(1, fill_value='')
+    group_id = (sender != prev_sender).cumsum()
+
+    # Count run lengths per group, keep sender label
+    run_info = valid.groupby(group_id).agg(sender=('sender', 'first'), size=('sender', 'count'))
+
+    members_set = set(members)
+    triple_runs = run_info[(run_info['size'] >= 3) & run_info['sender'].isin(members_set)]
+    counts = triple_runs['sender'].astype(str).value_counts()
 
     return sorted(
-        [{'member': m, 'count': c} for m, c in counts.items()],
+        [{'member': m, 'count': int(c)} for m, c in counts.items()],
         key=lambda x: x['count'], reverse=True
     )
 
@@ -631,7 +665,9 @@ def get_top_ngrams(df: pd.DataFrame, n=2, top_k=10):
     }
 
     all_words = []
-    for content in df[~df['is_system'] & ~df['is_media']]['content'].dropna():
+    pool = df[~df['is_system'] & ~df['is_media']]['content'].dropna()
+    pool = pool.tail(5_000)  # cap to last 5,000 messages
+    for content in pool:
         ws = [w for w in re.findall(r'\b[a-záéíóúüñ]{3,}\b', content.lower()) if w not in STOP]
         all_words.extend(ws)
 
@@ -815,7 +851,7 @@ def analyze():
 
     lexical_richness = []
     for member in members:
-        texts = df_real[df_real['sender'] == member]['content'].dropna()
+        texts = df_real[df_real['sender'] == member]['content'].dropna().iloc[:10_000]
         all_w = re.findall(r'\b[a-záéíóúüñ]{3,}\b', ' '.join(texts).lower())
         total_w = len(all_w)
         if total_w > 0:
@@ -857,6 +893,10 @@ def analyze():
         'burst_count': len(detected_bursts),
     }
 
+    # Free large dataframes before the Claude API call
+    del df, df_real, df_text
+    gc.collect()
+
     ai_available = False
     ai_result = None
     ai_error = None
@@ -866,6 +906,9 @@ def analyze():
             ai_available = True
         except Exception as exc:
             ai_error = getattr(exc, 'reason', 'network_error')
+
+    def cap(lst, n=500):
+        return lst[:n] if isinstance(lst, list) else lst
 
     return jsonify({
         'metadata': {
@@ -880,33 +923,33 @@ def analyze():
             'members': members,
         },
         'activity': {
-            'by_month': by_month_list,
-            'heatmap': heatmap_list,
+            'by_month': cap(by_month_list),
+            'heatmap': cap(heatmap_list),
         },
         'members': {
-            'quarterly_evolution': quarterly_list,
-            'lexical_richness': lexical_richness,
-            'interaction_network': interaction_network,
+            'quarterly_evolution': cap(quarterly_list),
+            'lexical_richness': cap(lexical_richness),
+            'interaction_network': cap(interaction_network),
         },
         'spelling': {
-            'ranking': spell_ranking,
-            'frequent_errors': frequent_errors,
-            'word_cloud_data': word_cloud_data,
+            'ranking': cap(spell_ranking),
+            'frequent_errors': cap(frequent_errors),
+            'word_cloud_data': cap(word_cloud_data),
         },
         'bursts': {
-            'detected': detected_bursts,
-            'top_phrases': top_phrases,
-            'top_emojis': top_emojis,
+            'detected': cap(detected_bursts),
+            'top_phrases': cap(top_phrases),
+            'top_emojis': cap(top_emojis),
         },
         'dynamics': {
-            'ghosting_rate': ghosting_rate,
-            'triple_texting': triple_texting,
+            'ghosting_rate': cap(ghosting_rate),
+            'triple_texting': cap(triple_texting),
         },
         'ai': {
             'available': ai_available,
             'error': ai_error,
             'analisis_vibe': (ai_result or {}).get('analisis_vibe', ''),
-            'mapeo_temas':   (ai_result or {}).get('mapeo_temas', []),
+            'mapeo_temas':   cap((ai_result or {}).get('mapeo_temas', [])),
             'perfiles_personales': (ai_result or {}).get('perfiles_personales', {}),
         },
     })
